@@ -3,75 +3,23 @@ require("dotenv").config();
 
 const { multiTokenizer } = require("./multitokenizer");
 
-// Github Search REST API currently does not support sorting repositories by number of stars
-const fetchTotalStars = (parameters, token) => {
-  return axios({
-    url: "https://api.github.com/graphql",
-    method: "post",
-    headers: {
-      Authorization: `bearer ${token}`,
-    },
-    data: {
-      query: `
-        query userInfo($login: String!) {
-          user(login: $login) {
-            repositories(first: 100, ownerAffiliations: OWNER, orderBy: {direction: DESC, field: STARGAZERS}) {
-              totalCount
-              nodes {
-                stargazers {
-                  totalCount
-                }
-              }
-            }
-          }
-        }
-        `,
-      variables: parameters,
-    },
-  }).then((e) =>
-    e.data.data.user.repositories.nodes.reduce((prev, curr) => {
-      return prev + curr.stargazers.totalCount;
-    }, 0)
-  );
-};
+const fetchGitHubData = async (url, token) => {
+  try {
+    const response = await axios({
+      method: "get",
+      url: url,
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/vnd.github.cloak-preview",
+        Authorization: `bearer ${token}`,
+      },
+    });
 
-// https://docs.github.com/en/free-pro-team@latest/rest/reference/search#search-commits
-const fetchTotalCommits = (variables, token) => {
-  return axios({
-    method: "get",
-    url: `https://api.github.com/search/commits?q=author:${variables.login}+committer-date:>2020-01-01`,
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/vnd.github.cloak-preview",
-      Authorization: `bearer ${token}`,
-    },
-  }).then((e) => e);
-};
-
-//https://docs.github.com/en/free-pro-team@latest/rest/reference/search#search-issues-and-pull-requests
-const fetchTotalIssues = (params, token) => {
-  return axios({
-    method: "get",
-    url: `https://api.github.com/search/issues?q=author:${params.login}+is:issue+created:2020-01-01..2020-12-31`,
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/vnd.github.cloak-preview",
-      Authorization: `bearer ${token}`,
-    },
-  }).then((e) => e);
-};
-
-//https://docs.github.com/en/free-pro-team@latest/rest/reference/search#search-issues-and-pull-requests
-const fetchTotalPRs = (params, token) => {
-  return axios({
-    method: "get",
-    url: `https://api.github.com/search/issues?q=author:${params.login}+is:pr+created:2020-01-01..2020-12-31`,
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/vnd.github.cloak-preview",
-      Authorization: `bearer ${token}`,
-    },
-  }).then((e) => e);
+    return response.data;
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
 };
 
 const statsFetch = async (parameters) => {
@@ -82,27 +30,54 @@ const statsFetch = async (parameters) => {
     commits: 0,
   };
 
-  _stats.commits = await fetcher(fetchTotalCommits, parameters);
-  _stats.issues = await fetcher(fetchTotalIssues, parameters);
-  _stats.pr = await fetcher(fetchTotalPRs, parameters);
-  _stats.stars = await fetchTotalStars(parameters, process.env.TOKEN_1);
+  // Fetch data for each type of statistic
+  const commitsResponse = await fetchGitHubData(
+    `https://api.github.com/search/commits?q=author:${parameters.login}+committer-date:>2020-01-01`,
+    process.env.TOKEN_1
+  );
+  const issuesResponse = await fetchGitHubData(
+    `https://api.github.com/search/issues?q=author:${parameters.login}+is:issue+created:2020-01-01..2020-12-31`,
+    process.env.TOKEN_1
+  );
+  const prsResponse = await fetchGitHubData(
+    `https://api.github.com/search/issues?q=author:${parameters.login}+is:pr+created:2020-01-01..2020-12-31`,
+    process.env.TOKEN_1
+  );
+
+  // Calculate total number of commits, issues, and pull requests
+  _stats.commits = commitsResponse.total_count;
+  _stats.issues = issuesResponse.total_count;
+  _stats.pr = prsResponse.total_count;
+
+  // Calculate total number of stars
+  const userInfoResponse = await axios({
+    url: "https://api.github.com/graphql",
+    method: "post",
+    headers: {
+      Authorization: `bearer ${process.env.TOKEN_1}`,
+    },
+    data: {
+      query: `
+        query userInfo($login: String!) {
+          user(login: $login) {
+            repositories(first: 100, ownerAffiliations: OWNER, orderBy: {direction: DESC, field: STARGAZERS}) {
+              totalCount
+             nodes {
+              stargazers {
+                totalCount
+              }
+            }
+          }
+        }
+      }`,
+      variables: parameters,
+    },
+  });
+
+  _stats.stars = userInfoResponse.data.data.user.repositories.nodes.reduce(
+    (prev, curr) => prev + curr.stargazers.totalCount,
+    0
+  );
 
   return _stats;
 };
-
-const fetcher = async (func, params) => {
-  try {
-    // let res = await func(params, process.env.TOKEN_1);
-    // return res;
-    let res = await multiTokenizer(func, params, 0);
-    return res;
-  } catch (e) {
-    console.log(e);
-    return 0;
-  }
-};
-
-export async function fetchStats(username) {
-  let res = await statsFetch({ login: username });
-  return res;
-}
